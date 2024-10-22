@@ -5,21 +5,26 @@ import enum
 import time
 import typing
 import getpass
+import glob
+import os
+
+CONFIG_MQTT_HOST = "homeassistant.home"
+CONFIG_UPDATE_INTERVAL_S = 20
 
 class SensorInfoExtra(SensorInfo):
     options: typing.List[str]
     expire_after: int
 
 class Status(enum.Enum):
-    AVAILABLE = ("Added Available", "available")
-    BUSY = ("Added Busy", "busy")
-    DO_NOT_DISTURB = ("Added DoNotDisturb", "do_not_disturb")
-    BE_RIGHT_BACK = ("Added BeRightBack", "be_right_back")
-    ON_THE_PHONE = ("Added DoNotDisturb", "on_the_phone")
-    PRESENTING = ("Added Presenting", "presenting")
+    AVAILABLE = ("availability: Available", "available")
+    BUSY = ("availability: Busy", "busy")
+    DO_NOT_DISTURB = ("availability: DoNotDisturb", "do_not_disturb")
+    BE_RIGHT_BACK = ("availability: BeRightBack", "be_right_back")
+    #ON_THE_PHONE = ("Added DoNotDisturb", "on_the_phone")
+    #PRESENTING = ("Added Presenting", "presenting")
     IN_A_MEETING = ("Added InAMeeting", "in_a_meeting")
-    AWAY = ("Added Away", "away")
-    OFFLINE = ("Offline", "offline")
+    AWAY = ("availability: Away", "away")
+    OFFLINE = ("availability: Offline", "offline")
 
     def __new__(cls, search_str, value):
         obj = object.__new__(cls)
@@ -33,25 +38,46 @@ class Status(enum.Enum):
     def get_state(self) -> str:
         return self._value_
 
-# Helper class with functions parse the Teams log file and assign an RGB value to the current status.
-
 class TeamsStatus():
 
-    def __init__(self, ):
+    def __init__(self):
         
         user_name = getpass.getuser()
 
         # Intialize the filepath variable
-        self._filepath = f"C:\\Users\\{user_name}\\AppData\\Roaming\\Microsoft\\Teams\\logs.txt"
-        #self._filepath = "c:\\Users\\micro\\AppData\\Local\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\Logs\\MSTeams_2024-10-21_20-33-49.00.log"
-        
+        self._filepath = f"c:\\Users\\{user_name}\\AppData\\Local\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\Logs\\"
 
-    def get_status(self):
+
+    def find_newest_teams_log(self, log_folder) -> str|None:
+        # Use glob to find all log files in the specified folder
+        log_files = glob.glob(os.path.join(log_folder, 'MSTeams_*.log'))
+        
+        # Check if any log files were found
+        if not log_files:
+            print("No log files found in the specified folder.")
+            return None
+        
+        # Sort log files by name and get the last one (newest)
+        newest_log = sorted(log_files)[-1]
+        return newest_log
+
+
+
+
+    def get_status(self) -> Status:
+        current_state = Status.OFFLINE
+
         # Look for this string in the MSFT Teams log file
-        indicator = "StatusIndicatorStateService: Added "
+        indicator = "native_modules::UserDataCrossCloudModule: Received Action: UserPresenceAction:"
+
+        newest_log_file = self.find_newest_teams_log(self._filepath)
+        if not newest_log_file:
+            print(f"Failed to find teams log in {self._filepath}")
+            return current_state
+        print(f"The newest log file is: {newest_log_file}")
 
         # Open the log file
-        log_file = open(self._filepath, "r")
+        log_file = open(newest_log_file, "r")
 
         # Loop through the file line by line
         last_line = ""
@@ -60,19 +86,21 @@ class TeamsStatus():
             if indicator in line:
                 last_line = line
 
-        # Loop through list of possible status's, if the last instance indicator 
+        # Loop through list of possible status, if the last instance indicator 
         # finds a match, return that status
-        current_state = Status.OFFLINE
+        print(f"last indicator: {last_line}")
         for status in Status:
             if last_line.__contains__(status.get_search_str()):
                 current_state = status
+                print(f"Found Status: {current_state}")
                 break
         # closing text file	
         log_file.close()
         return current_state
 
 class TeamsStatePublisher():
-    def __init__(self, mqtt_host: str, sensor_name: str) -> None:
+
+    def __init__(self, mqtt_host: str) -> None:
         self._mqtt_settings = Settings.MQTT(host=mqtt_host)
         self._hostname = socket.gethostname()
         device_info = DeviceInfo(name=f"Microsoft Teams on {self._hostname}" , identifiers=f"msteams-{self._hostname}")
@@ -94,13 +122,19 @@ class TeamsStatePublisher():
         self._sensor = Sensor(sensor_settings)
         self._sensor.write_config()
     
-    def send_state(self, state: Status):
+    def send_state(self, state: Status) -> None:
         self._sensor.set_state(state.value)
 
 
-publisher = TeamsStatePublisher("homeassistant.home")
-teamsStatus = TeamsStatus()
-while True:
-    current_state = teamsStatus.get_status()
-    publisher.send_state(current_state)
-    time.sleep(10)
+
+def main():
+    
+    publisher = TeamsStatePublisher(CONFIG_MQTT_HOST)
+    teamsStatus = TeamsStatus()
+    while True:
+        current_state = teamsStatus.get_status()
+        publisher.send_state(current_state)
+        time.sleep(CONFIG_UPDATE_INTERVAL_S)
+
+if __name__ == "__main__":
+    main()
